@@ -23,25 +23,42 @@
 
 #include "results.hpp"
 #include "list.hpp"
+#include "object_store.hpp"
 #include "parser.hpp"
 #include "query_builder.hpp"
 
 namespace realm {
 namespace js {
 
+template<typename>
+class NativeAccessor;
+
 template<typename T>
-struct ResultsClass : ClassDefinition<T, realm::Results, CollectionClass<T>> {
+class Results : public realm::Results {
+  public:
+    Results(Results const& r) : realm::Results(r) {};
+    Results(realm::Results const& r) : realm::Results(r) {};
+    Results(Results&&) = default;
+    Results& operator=(Results&&) = default;
+    Results& operator=(Results const&) = default;
+
+    using realm::Results::Results;
+
+    std::vector<std::pair<Protected<typename T::Function>, NotificationToken>> m_notification_tokens;
+};
+
+template<typename T>
+struct ResultsClass : ClassDefinition<T, realm::js::Results<T>, CollectionClass<T>> {
     using ContextType = typename T::Context;
     using ObjectType = typename T::Object;
     using ValueType = typename T::Value;
+    using FunctionType = typename T::Function;
     using Object = js::Object<T>;
     using Value = js::Value<T>;
     using ReturnValue = js::ReturnValue<T>;
 
-    static ObjectType create_instance(ContextType, const realm::Results &, bool live = true);
-    static ObjectType create_instance(ContextType, const realm::List &, bool live = true);
-    static ObjectType create_instance(ContextType, SharedRealm, const ObjectSchema &, bool live = true);
-    static ObjectType create_instance(ContextType, SharedRealm, const ObjectSchema &, Query, bool live = true);
+    static ObjectType create_instance(ContextType, realm::Results);
+    static ObjectType create_instance(ContextType, SharedRealm, const std::string &object_type);
 
     template<typename U>
     static ObjectType create_filtered(ContextType, const U &, size_t, const ValueType[]);
@@ -52,11 +69,16 @@ struct ResultsClass : ClassDefinition<T, realm::Results, CollectionClass<T>> {
     static void get_length(ContextType, ObjectType, ReturnValue &);
     static void get_index(ContextType, ObjectType, uint32_t, ReturnValue &);
 
-    static void snapshot(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void filtered(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void sorted(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void is_valid(ContextType, ObjectType, size_t, const ValueType [], ReturnValue &);
+    static void snapshot(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void filtered(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void sorted(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void is_valid(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
 
+    // observable
+    static void add_listener(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void remove_listener(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void remove_all_listeners(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    
     std::string const name = "Results";
 
     MethodMap<T> const methods = {
@@ -64,6 +86,9 @@ struct ResultsClass : ClassDefinition<T, realm::Results, CollectionClass<T>> {
         {"filtered", wrap<filtered>},
         {"sorted", wrap<sorted>},
         {"isValid", wrap<is_valid>},
+        {"addListener", wrap<add_listener>},
+        {"removeListener", wrap<remove_listener>},
+        {"removeAllListeners", wrap<remove_all_listeners>},
     };
     
     PropertyMap<T> const properties = {
@@ -74,33 +99,17 @@ struct ResultsClass : ClassDefinition<T, realm::Results, CollectionClass<T>> {
 };
 
 template<typename T>
-typename T::Object ResultsClass<T>::create_instance(ContextType ctx, const realm::Results &results, bool live) {
-    auto new_results = new realm::Results(results);
-    new_results->set_live(live);
-
-    return create_object<T, ResultsClass<T>>(ctx, new_results);
+typename T::Object ResultsClass<T>::create_instance(ContextType ctx, realm::Results results) {
+    return create_object<T, ResultsClass<T>>(ctx, new realm::js::Results<T>(std::move(results)));
 }
 
 template<typename T>
-typename T::Object ResultsClass<T>::create_instance(ContextType ctx, const realm::List &list, bool live) {
-    return create_instance(ctx, list.get_realm(), list.get_object_schema(), list.get_query(), live);
-}
-
-template<typename T>
-typename T::Object ResultsClass<T>::create_instance(ContextType ctx, SharedRealm realm, const ObjectSchema &object_schema, bool live) {
-    auto table = ObjectStore::table_for_object_type(realm->read_group(), object_schema.name);
-    auto results = new realm::Results(realm, object_schema, *table);
-    results->set_live(live);
-
-    return create_object<T, ResultsClass<T>>(ctx, results);
-}
-
-template<typename T>
-typename T::Object ResultsClass<T>::create_instance(ContextType ctx, SharedRealm realm, const ObjectSchema &object_schema, Query query, bool live) {
-    auto results = new realm::Results(realm, object_schema, std::move(query));
-    results->set_live(live);
-
-    return create_object<T, ResultsClass<T>>(ctx, results);
+typename T::Object ResultsClass<T>::create_instance(ContextType ctx, SharedRealm realm, const std::string &object_type) {
+    auto table = ObjectStore::table_for_object_type(realm->read_group(), object_type);
+    if (!table) {
+        throw std::runtime_error("Table does not exist. Object type: " + object_type);
+    }
+    return create_object<T, ResultsClass<T>>(ctx, new realm::js::Results<T>(realm, *table));
 }
 
 template<typename T>
@@ -111,18 +120,12 @@ typename T::Object ResultsClass<T>::create_filtered(ContextType ctx, const U &co
     auto const &realm = collection.get_realm();
     auto const &object_schema = collection.get_object_schema();
 
-    std::vector<ValueType> args;
-    args.reserve(argc - 1);
-
-    for (size_t i = 1; i < argc; i++) {
-        args.push_back(arguments[i]);
-    }
-
     parser::Predicate predicate = parser::parse(query_string);
-    query_builder::ArgumentConverter<ValueType, ContextType> converter(ctx, realm, args);
-    query_builder::apply_predicate(query, predicate, converter, *realm->config().schema, object_schema.name);
+    NativeAccessor<T> accessor(ctx, realm, object_schema);
+    query_builder::ArgumentConverter<ValueType, NativeAccessor<T>> converter(accessor, &arguments[1], argc - 1);
+    query_builder::apply_predicate(query, predicate, converter, realm->schema(), object_schema.name);
 
-    return create_instance(ctx, realm, object_schema, std::move(query));
+    return create_instance(ctx, realm::Results(realm, std::move(query)));
 }
 
 template<typename T>
@@ -168,7 +171,7 @@ typename T::Object ResultsClass<T>::create_sorted(ContextType ctx, const U &coll
         ascending.push_back(argc == 1 ? true : !Value::to_boolean(ctx, arguments[1]));
     }
 
-    std::vector<size_t> columns;
+    std::vector<std::vector<size_t>> columns;
     columns.reserve(prop_count);
 
     for (std::string &prop_name : prop_names) {
@@ -176,10 +179,12 @@ typename T::Object ResultsClass<T>::create_sorted(ContextType ctx, const U &coll
         if (!prop) {
             throw std::runtime_error("Property '" + prop_name + "' does not exist on object type '" + object_schema.name + "'");
         }
-        columns.push_back(prop->table_column);
+        columns.push_back({prop->table_column});
     }
 
-    auto results = new realm::Results(realm, object_schema, collection.get_query(), {std::move(columns), std::move(ascending)});
+    auto table = realm::ObjectStore::table_for_object_type(realm->read_group(), object_schema.name);
+    auto results = new realm::js::Results<T>(realm, collection.get_query(),
+                                             {*table, std::move(columns), std::move(ascending)});
     return create_object<T, ResultsClass<T>>(ctx, results);
 }
 
@@ -205,15 +210,15 @@ void ResultsClass<T>::get_index(ContextType ctx, ObjectType object, uint32_t ind
 }
 
 template<typename T>
-void ResultsClass<T>::snapshot(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ResultsClass<T>::snapshot(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count(argc, 0);
 
     auto results = get_internal<T, ResultsClass<T>>(this_object);
-    return_value.set(ResultsClass<T>::create_instance(ctx, *results, false));
+    return_value.set(ResultsClass<T>::create_instance(ctx, results->snapshot()));
 }
 
 template<typename T>
-void ResultsClass<T>::filtered(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ResultsClass<T>::filtered(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count_at_least(argc, 1);
 
     auto results = get_internal<T, ResultsClass<T>>(this_object);
@@ -221,7 +226,7 @@ void ResultsClass<T>::filtered(ContextType ctx, ObjectType this_object, size_t a
 }
 
 template<typename T>
-void ResultsClass<T>::sorted(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ResultsClass<T>::sorted(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count(argc, 1, 2);
 
     auto results = get_internal<T, ResultsClass<T>>(this_object);
@@ -229,9 +234,58 @@ void ResultsClass<T>::sorted(ContextType ctx, ObjectType this_object, size_t arg
 }
 
 template<typename T>
-void ResultsClass<T>::is_valid(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ResultsClass<T>::is_valid(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     return_value.set(get_internal<T, ResultsClass<T>>(this_object)->is_valid());
 }
+    
+template<typename T>
+void ResultsClass<T>::add_listener(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    validate_argument_count(argc, 1);
+    
+    auto results = get_internal<T, ResultsClass<T>>(this_object);
+    auto callback = Value::validated_to_function(ctx, arguments[0]);
+    Protected<FunctionType> protected_callback(ctx, callback);
+    Protected<ObjectType> protected_this(ctx, this_object);
+    Protected<typename T::GlobalContext> protected_ctx(Context<T>::get_global_context(ctx));
+    
+    auto token = results->add_notification_callback([=](CollectionChangeSet change_set, std::exception_ptr exception) {
+        HANDLESCOPE
 
+        ValueType arguments[2];
+        arguments[0] = static_cast<ObjectType>(protected_this);
+        arguments[1] = CollectionClass<T>::create_collection_change_set(protected_ctx, change_set);
+        Function<T>::callback(protected_ctx, protected_callback, protected_this, 2, arguments);
+    });
+    results->m_notification_tokens.emplace_back(protected_callback, std::move(token));
+}
+
+template<typename T>
+void ResultsClass<T>::remove_listener(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    validate_argument_count(argc, 1);
+    
+    auto results = get_internal<T, ResultsClass<T>>(this_object);
+    auto callback = Value::validated_to_function(ctx, arguments[0]);
+    auto protected_function = Protected<FunctionType>(ctx, callback);
+    
+    auto iter = results->m_notification_tokens.begin();
+    typename Protected<FunctionType>::Comparator compare;
+    while (iter != results->m_notification_tokens.end()) {
+        if(compare(iter->first, protected_function)) {
+            iter = results->m_notification_tokens.erase(iter);
+        }
+        else {
+            iter++;
+        }
+    }
+}
+
+template<typename T>
+void ResultsClass<T>::remove_all_listeners(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    validate_argument_count(argc, 0);
+    
+    auto results = get_internal<T, ResultsClass<T>>(this_object);
+    results->m_notification_tokens.clear();
+}
+    
 } // js
 } // realm

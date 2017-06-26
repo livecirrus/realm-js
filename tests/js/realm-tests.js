@@ -22,6 +22,11 @@ var Realm = require('realm');
 var TestCase = require('./asserts');
 var schemas = require('./schemas');
 
+let pathSeparator = '/';
+if (typeof process === 'object' && process.platform === 'win32') {
+    pathSeparator = '\\';
+}
+
 module.exports = {
     testRealmConstructor: function() {
         var realm = new Realm({schema: []});
@@ -33,7 +38,7 @@ module.exports = {
 
     testRealmConstructorPath: function() {
         TestCase.assertThrows(function() {
-            new Realm('/invalidpath');
+            new Realm('');
         }, 'Realm cannot be created with an invalid path');
         TestCase.assertThrows(function() {
             new Realm('test1.realm', 'invalidArgument');
@@ -45,7 +50,7 @@ module.exports = {
         var defaultRealm2 = new Realm();
         TestCase.assertEqual(defaultRealm2.path, Realm.defaultPath);
 
-        var defaultDir = Realm.defaultPath.substring(0, Realm.defaultPath.lastIndexOf("/") + 1)
+        var defaultDir = Realm.defaultPath.substring(0, Realm.defaultPath.lastIndexOf(pathSeparator) + 1)
         var testPath = 'test1.realm';
         var realm = new Realm({schema: [], path: testPath});
         TestCase.assertEqual(realm.path, defaultDir + testPath);
@@ -60,7 +65,7 @@ module.exports = {
         TestCase.assertEqual(defaultRealm.schemaVersion, 0);
 
         TestCase.assertThrows(function() {
-            new Realm({schemaVersion: 1});
+            new Realm({schemaVersion: 1, schema: []});
         }, "Realm already opened at a different schema version");
         
         TestCase.assertEqual(new Realm().schemaVersion, 0);
@@ -116,7 +121,7 @@ module.exports = {
         }, 'The schema should be an array of ObjectSchema objects');
 
         TestCase.assertThrows(function() {
-            new Realm({schema: [{properties: {intCol: Realm.Types.INT}}]});
+            new Realm({schema: [{properties: {intCol: 'int'}}]});
         }, 'The schema should be an array of ObjectSchema objects');
     },
 
@@ -150,7 +155,7 @@ module.exports = {
         TestCase.assertEqual(defaultRealm.path, Realm.defaultPath);
 
         try {
-            var newPath = Realm.defaultPath.substring(0, defaultPath.lastIndexOf('/') + 1) + 'default2.realm';
+            var newPath = Realm.defaultPath.substring(0, defaultPath.lastIndexOf(pathSeparator) + 1) + 'default2.realm';
             Realm.defaultPath = newPath;
             defaultRealm = new Realm({schema: []});
             TestCase.assertEqual(defaultRealm.path, newPath, "should use updated default realm path");
@@ -170,18 +175,6 @@ module.exports = {
         realm = new Realm({schema: [], schemaVersion: 2, path: 'another.realm'});
         TestCase.assertEqual(realm.schemaVersion, 2);
         TestCase.assertEqual(Realm.schemaVersion('another.realm'), 2);
-
-        var encryptionKey = new Int8Array(64);
-        realm = new Realm({schema: [], schemaVersion: 3, path: 'encrypted.realm', encryptionKey: encryptionKey});
-        TestCase.assertEqual(realm.schemaVersion, 3);
-        TestCase.assertEqual(Realm.schemaVersion('encrypted.realm', encryptionKey), 3);
-
-        TestCase.assertThrows(function() {
-            Realm.schemaVersion('encrypted.realm', encryptionKey, 'extra');
-        });
-        TestCase.assertThrows(function() {
-            Realm.schemaVersion('encrypted.realm', 'asdf');
-        });
     },
 
     testRealmWrite: function() {
@@ -595,6 +588,12 @@ module.exports = {
             realm.delete(threeObjects);
             TestCase.assertEqual(objects.length, 4, 'wrong object count');
             TestCase.assertEqual(threeObjects.length, 0, 'threeObject should have been deleted');
+
+            var o = objects[0];
+            realm.delete(o);
+            TestCase.assertThrows(function() {
+                realm.delete(o);
+            });
         });
     },
 
@@ -653,6 +652,50 @@ module.exports = {
         });
         TestCase.assertThrows(function() {
             realm.objects(InvalidPerson);
+        });
+
+        var person = realm.objects('PersonObject')[0];
+        var listenerCallback = () => {};
+        realm.addListener('change', listenerCallback);
+
+        // The tests below assert that everthing throws when
+        // operating on a closed realm
+        realm.close();
+
+        TestCase.assertThrows(function() {
+            console.log("Name: ", person.name);
+        });
+
+        TestCase.assertThrows(function() {
+            realm.objects('PersonObject');
+        });
+
+        TestCase.assertThrows(function() {
+            realm.addListener('change', () => {});
+        });
+
+        TestCase.assertThrows(function() {
+            realm.create('PersonObject', {name: 'Ari', age: 10});
+        });
+
+        TestCase.assertThrows(function() {
+            realm.delete(person);
+        });
+
+        TestCase.assertThrows(function() {
+            realm.deleteAll();
+        });
+
+        TestCase.assertThrows(function() {
+            realm.write(() => {});
+        });
+
+        TestCase.assertThrows(function() {
+            realm.removeListener('change', listenerCallback);
+        });
+
+        TestCase.assertThrows(function() {
+            realm.removeAllListeners();
         });
     },
 
@@ -749,7 +792,13 @@ module.exports = {
             schemas.PersonObject, schemas.LinkTypes];
         
         var schemaMap = {};
-        originalSchema.forEach(function(objectSchema) { schemaMap[objectSchema.name] = objectSchema; });
+        originalSchema.forEach(function(objectSchema) {
+            if (objectSchema.schema) { // for PersonObject
+                schemaMap[objectSchema.schema.name] = objectSchema;
+            } else {
+                schemaMap[objectSchema.name] = objectSchema;
+            }
+        });
 
         var realm = new Realm({schema: originalSchema});
 
@@ -810,4 +859,25 @@ module.exports = {
         realm = new Realm({path: 'dates-v5.realm', schema: [schemas.DateObject]});
         TestCase.assertEqual(realm.objects('Date')[0].currentDate.getTime(), 1);
     },
+
+    testErrorMessageFromInvalidWrite: function() {
+        var realm = new Realm({schema: [schemas.PersonObject]});
+        
+        TestCase.assertThrowsException(function() {
+            realm.write(function () {
+                var p1 = realm.create('PersonObject', { name: 'Ari', age: 10 });
+                p1.age = "Ten";
+            });
+        }, new Error("PersonObject.age must be of type: number"));
+    },
+
+    testErrorMessageFromInvalidCreate: function() {
+        var realm = new Realm({schema: [schemas.PersonObject]});
+
+        TestCase.assertThrowsException(function() {
+            realm.write(function () {
+                var p1 = realm.create('PersonObject', { name: 'Ari', age: 'Ten' });
+            });
+        }, new Error("PersonObject.age must be of type: number"));
+    }
 };

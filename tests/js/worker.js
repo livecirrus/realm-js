@@ -21,8 +21,13 @@
 'use strict';
 
 class Worker {
-    constructor(script) {
-        this._process = require('child_process').fork(script);
+    constructor(script, args) {
+        let options;
+        if (process.execArgv.find(arg => arg.indexOf("--debug="))) {
+            options = { execArgv: ['--debug=44725'] };
+        }
+
+        this._process = require('child_process').fork(script, args, options);
 
         this._process.on('message', (message) => {
             if (this.onmessage) {
@@ -31,12 +36,21 @@ class Worker {
         });
     }
     postMessage(message) {
-        this._process.send(message);
-    }
-    terminate() {
         if (this._process) {
+            this._process.send(message);
+        }
+    }
+    terminate(cb) {
+        if (!cb) {
+            cb = function() { };
+        }
+
+        if (this._process) {
+            this._process.once('close', cb);
             this._process.kill();
             delete this._process;
+        } else {
+            cb();
         }
     }
 }

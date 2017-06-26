@@ -19,11 +19,13 @@
 #import "RealmReact.h"
 #import "RealmAnalytics.h"
 #import "RCTBridge.h"
+#import "RCTJavaScriptExecutor.h"
 
 #import "jsc_init.h"
 #import "shared_realm.hpp"
 #import "realm_coordinator.hpp"
 
+#import <objc/runtime.h>
 #import <arpa/inet.h>
 #import <ifaddrs.h>
 #import <netdb.h>
@@ -42,8 +44,15 @@ using namespace realm::rpc;
 #endif
 
 @interface NSObject ()
-- (instancetype)initWithJSContext:(void *)context;
-- (JSGlobalContextRef)ctx;
+- (instancetype)initWithJSContext:(JSContext *)context;
+- (instancetype)initWithJSContext:(JSContext *)context onThread:(NSThread *)thread;
+- (JSContext *)context;
+@end
+
+// the part of the RCTCxxBridge private class we care about
+@interface RCTBridge (RCTCxxBridge)
+- (JSGlobalContextRef)jsContextRef;
+- (void)executeBlockOnJavaScriptThread:(dispatch_block_t)block;
 @end
 
 extern "C" JSGlobalContextRef RealmReactGetJSGlobalContextForExecutor(id executor, bool create) {
@@ -55,23 +64,20 @@ extern "C" JSGlobalContextRef RealmReactGetJSGlobalContextForExecutor(id executo
     id rctJSContext = object_getIvar(executor, contextIvar);
     if (!rctJSContext && create) {
         Class RCTJavaScriptContext = NSClassFromString(@"RCTJavaScriptContext");
-        NSMethodSignature *signature = [RCTJavaScriptContext instanceMethodSignatureForSelector:@selector(initWithJSContext:)];
-        assert(signature);
-
-        // React Native 0.14+ expects a JSContext here, but we also support 0.13.x, which takes a JSGlobalContextRef.
-        if (!strcmp([signature getArgumentTypeAtIndex:2], "@")) {
-            JSContext *context = [[JSContext alloc] init];
-            rctJSContext = [[RCTJavaScriptContext alloc] initWithJSContext:(void *)context];
+        if ([RCTJavaScriptContext instancesRespondToSelector:@selector(initWithJSContext:onThread:)]) {
+            // for RN 0.28.0+
+            rctJSContext = [[RCTJavaScriptContext alloc] initWithJSContext:[JSContext new] onThread:[NSThread currentThread]];
         }
         else {
-            JSGlobalContextRef ctx = JSGlobalContextCreate(NULL);
-            rctJSContext = [[RCTJavaScriptContext alloc] initWithJSContext:ctx];
+            // for RN < 0.28.0
+            assert([RCTJavaScriptContext instancesRespondToSelector:@selector(initWithJSContext:)]);
+            rctJSContext = [[RCTJavaScriptContext alloc] initWithJSContext:[JSContext new]];
         }
 
         object_setIvar(executor, contextIvar, rctJSContext);
     }
 
-    return [rctJSContext ctx];
+    return [rctJSContext context].JSGlobalContextRef;
 }
 
 @interface RealmReact () <RCTBridgeModule>
@@ -265,6 +271,22 @@ RCT_REMAP_METHOD(emit, emitEvent:(NSString *)eventName withObject:(id)object) {
     [self performSelectorOnMainThread:@selector(invalidate) withObject:nil waitUntilDone:YES];
 }
 
+typedef JSGlobalContextRef (^JSContextRefExtractor)();
+
+void _initializeOnJSThread(JSContextRefExtractor jsContextExtractor) {
+    // Make sure the previous JS thread is completely finished before continuing.
+    static __weak NSThread *s_currentJSThread;
+    while (s_currentJSThread && !s_currentJSThread.finished) {
+        [NSThread sleepForTimeInterval:0.1];
+    }
+    s_currentJSThread = [NSThread currentThread];
+
+    // Close all cached Realms from the previous JS thread.
+    realm::_impl::RealmCoordinator::clear_all_caches();
+
+    RJSInitializeInContext(jsContextExtractor());
+}
+
 - (void)setBridge:(RCTBridge *)bridge {
     _bridge = bridge;
 
@@ -272,16 +294,31 @@ RCT_REMAP_METHOD(emit, emitEvent:(NSString *)eventName withObject:(id)object) {
     [s_currentModule invalidate];
     s_currentModule = self;
 
-    id<RCTJavaScriptExecutor> executor = [bridge valueForKey:@"javaScriptExecutor"];
-
-    if ([executor isKindOfClass:NSClassFromString(@"RCTWebSocketExecutor")]) {
+    if (objc_lookUpClass("RCTWebSocketExecutor") && [bridge executorClass] == objc_lookUpClass("RCTWebSocketExecutor")) {
 #if DEBUG
         [self startRPC];
 #else
         @throw [NSException exceptionWithName:@"Invalid Executor" reason:@"Chrome debug mode not supported in Release builds" userInfo:nil];
 #endif
-    }
-    else {
+    } else if ([bridge isKindOfClass:objc_lookUpClass("RCTCxxBridge")]) {
+        // probe for the new C++ bridge in React Native 0.45+
+
+        __weak __typeof__(self) weakSelf = self;
+        __weak __typeof__(bridge) weakBridge = bridge;
+        [bridge executeBlockOnJavaScriptThread:^{
+            __typeof__(self) self = weakSelf;
+            __typeof__(bridge) bridge = weakBridge;
+            if (!self || !bridge) {
+                return;
+            }
+
+            _initializeOnJSThread(^{
+                return [bridge jsContextRef];
+            });
+        }];
+        return;
+    } else { // React Native 0.44 and older
+        id<RCTJavaScriptExecutor> executor = [bridge valueForKey:@"javaScriptExecutor"];
         __weak __typeof__(self) weakSelf = self;
         __weak __typeof__(executor) weakExecutor = executor;
 
@@ -292,18 +329,9 @@ RCT_REMAP_METHOD(emit, emitEvent:(NSString *)eventName withObject:(id)object) {
                 return;
             }
 
-            // Make sure the previous JS thread is completely finished before continuing.
-            static __weak NSThread *s_currentJSThread;
-            while (s_currentJSThread && !s_currentJSThread.finished) {
-                [NSThread sleepForTimeInterval:0.1];
-            }
-            s_currentJSThread = [NSThread currentThread];
-
-            // Close all cached Realms from the previous JS thread.
-            realm::_impl::RealmCoordinator::clear_all_caches();
-
-            JSGlobalContextRef ctx = RealmReactGetJSGlobalContextForExecutor(executor, true);
-            RJSInitializeInContext(ctx);
+            _initializeOnJSThread(^ {
+                return RealmReactGetJSGlobalContextForExecutor(executor, true);
+            });
         }];
     }
 }

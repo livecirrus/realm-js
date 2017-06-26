@@ -1,10 +1,206 @@
-x.x.x Release notes (yyyy-MM-dd)
+1.8.1 Release notes (2017-6-20)
 =============================================================
 ### Breaking changes
-* Please use `rnpm 1.9.0` or later to link your project. Older versions are no longer supported.
+* None
+
+### Enhancements
+* Accessing `Realm.Sync` when sync is not enabled will no longer throw, but return `undefined`.
+* Better error messages when creating objects.
+* Added bundled TypeScript declarations of the Realm API.
+* Added `objectSchema()` method on `Realm.Object` that returns the schema for the object.
+
+### Bug fixes
+* Fix `Realm.Sync.User.prototype.isAdmin` returning `false` for logged-in admin users. 
+
+1.8.0 Release notes (2017-6-15)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* Updated core and sync dependencies
+* Unified packaging
+
+### Bug fixes
+* Fix crash when used with the React Native C++ bridge
+* Fix `Realm.open` and `Realm.asyncOpen` missing when in the React Native debugger
+
+1.3.1 Release notes (2017-5-18)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* Add Realm open async API support.
+
+### Bug fixes
+* None
+
+
+1.3.0 Release notes (2017-5-11)
+=============================================================
+### Breaking changes
+* Files written by Realm this version cannot be read by earlier versions of Realm.
+Old files can still be opened and files open in read-only mode will not be modified.
+* The `setVerifyServersSslCertificate` method has been deleted
+* The SyncConfig now gets two more optional parameters, `validate_ssl` and `ssl_trust_certificate_path`.
 
 ### Enhancements
 * None
+
+### Bug fixes
+* None
+
+1.2.0 Release notes (2017-3-28)
+=============================================================
+### Breaking changes
+* This version is not compatible with versions of the Realm Object Server lower than 1.3.0.
+
+### Enhancements
+* None.
+
+### Bug fixes
+* Fixed bug where opening synced realms with an encryption key would fail.
+
+1.1.1 Release notes (2017-3-9)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* Add support for Node.js on Windows (#863).
+
+### Bug fixes
+* Fixed an error when installing Realm React Native module on Windows (#799).
+
+### Credits
+* Thanks to David Howell (@dbhowell) for adding a fix to Windows install (#849).
+
+1.0.2 Release notes (2017-2-7)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* None
+
+### Bug fixes
+* Proactively refresh sync user tokens to avoid a reconnect delay (#840)
+
+1.0.1 Release notes (2017-2-2)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* None
+
+### Bug fixes
+* Fix crash when the sync user token expires (#839)
+
+1.0.0 Release notes (2017-2-2)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* Add the Management Realm accessor on the User class, and its schema (#779)
+
+### Bug fixes
+* None
+
+0.15.4 Release notes (2017-1-11)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* None
+
+### Bug fixes
+* Always download Node binaries except on Windows, for unit testing (#789)
+
+
+0.15.3 Release notes (2017-1-10)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* More specific error message when setting a property to a wrong type (#730)
+
+### Bug fixes
+* Fix chrome debugging on React Native 0.39 and up (#766)
+
+
+0.15.2 Release notes (2016-12-29)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* More explicit handling of missing constructor (#742)
+
+### Bugfixes
+* Realm open on another thread (#473)
+* symbol() variable not found (#761)
+
+
+0.15.1 Release notes (2016-11-22)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* None
+
+### Bugfixes
+* Fix compile error for collection notification in chrome debug mode
+
+0.15.0 Release notes (2016-11-15)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* Node.js support
+* Support for fine grained notifications on `List` and `Results` objects
+* Updated test and examples for react-natve v0.37.0
+
+### Bugfixes
+* None
+
+0.14.3 Release notes (2016-8-8)
+=============================================================
+### Breaking changes
+* None
+
+### Enhancements
+* None
+
+### Bugfixes
+* Support for react-native v0.31.0
+
+0.14.2 Release notes (2016-8-3)
+=============================================================
+### Breaking changes
+* Deprecate `Realm.Types`. Please specify the type name as lowercase string instead.
+
+### Enhancements
+* None
+
+### Bugfixes
+* None
+
+0.14.2 Release notes (2016-7-11)
+=============================================================
+### Breaking changes
+* Please use `rnpm 1.9.0` or later to link your project. Older versions are no longer supported.
+* ReactNative versions older than v0.14.0 are no longer supported
+
+### Enhancements
+* Support for ReactNative versions v0.28.0+
+* Added support for debugging in Visual Studio Code.
 
 ### Bugfixes
 * None

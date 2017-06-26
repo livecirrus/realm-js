@@ -26,9 +26,26 @@ var TESTS = {
     RealmTests: require('./realm-tests'),
     ResultsTests: require('./results-tests'),
     QueryTests: require('./query-tests'),
-    EncryptionTests: require('./encryption-tests'),
-    MigrationTests: require('./migration-tests'),
+    MigrationTests: require('./migration-tests')
 };
+
+// encryption is not supported on windows
+if (!(typeof process === 'object' && process.platform === 'win32')) {
+    TESTS.EncryptionTests = require('./encryption-tests');
+}
+
+// If sync is enabled, run the sync tests
+if (Realm.Sync) {
+    TESTS.UserTests = require('./user-tests');
+    TESTS.SessionTests = require('./session-tests');
+}
+
+function node_require(module) { return require(module); }
+
+// If on node, run the async tests
+if (typeof process === 'object' && process + '' === '[object process]') {
+    TESTS.AsyncTests = node_require('./async-tests');
+}
 
 var SPECIAL_METHODS = {
     beforeEach: true,
@@ -62,7 +79,7 @@ exports.runTest = function(suiteName, testName) {
     if (testMethod) {
         // Start fresh in case of a crash in a previous run.
         Realm.clearTestState();
-
+        console.log("Starting test " + testName);
         var promise;
         try {
             promise = testMethod.call(testSuite);

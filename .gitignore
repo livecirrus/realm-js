@@ -18,6 +18,11 @@
 # core
 core
 core-*
+sync
+sync-*
+node-sync
+node-sync-*
+vendor/realm-node*
 
 # sh build.sh config
 /Realm/config.mk
@@ -98,6 +103,8 @@ build/
 # node.js
 node_modules/
 npm-debug.log
+/compiled/
+*.lock
 
 # Android/IJ
 /android/
@@ -105,3 +112,14 @@ npm-debug.log
 .gradle
 local.properties
 
+# Visual Studio Code
+.vscode
+tsconfig.json
+
+# Tests
+object-server-for-testing/
+tests/realm-object-server/
+vendor/sync
+vendor/sync*
+packager_out.txt
+build.log.*

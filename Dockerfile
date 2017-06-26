@@ -1,37 +1,76 @@
-FROM node:6
+FROM ubuntu:xenial
 
-# Make debugging quicker.
-RUN apt-get update && apt-get install -y gdb vim
+# Install the JDK
+# We are going to need some 32 bit binaries because aapt (Android Asset
+# Packaging Tool) requires it
+# file is need by the script that creates NDK toolchains
+ENV DEBIAN_FRONTEND noninteractive
+RUN dpkg --add-architecture i386 && \
+    apt-get update -qq && \
+    apt-get install -y \
+      autoconf \
+      automake \
+      build-essential \
+      bsdmainutils \
+      curl \
+      file \
+      git \
+      lsof \
+      libc6:i386 \
+      libconfig++9v5 \
+      libgcc1:i386 \
+      libncurses5:i386 \
+      libstdc++6:i386 \
+      libz1:i386 \
+      python \
+      python-dev \
+      s3cmd \
+      software-properties-common \
+      strace \
+      unzip \
+      wget \
+      zip && \
+    curl -sL https://deb.nodesource.com/setup_4.x | bash - && \
+    apt-get install -y nodejs && \
+    echo oracle-java6-installer shared/accepted-oracle-license-v1-1 select true | debconf-set-selections && \
+    add-apt-repository -y ppa:webupd8team/java && \
+    apt-get update -qq && \
+    apt-get install -y oracle-java8-installer && \
+    rm -rf /var/cache/oracle-jdk8-installer && \
+    apt-get clean
 
-# Add non-root user.
-RUN useradd -ms /bin/bash user
+ENV NPM_CONFIG_UNSAFE_PERM true
 
-# Make our workspace directory and work from there.
-RUN mkdir -p /usr/src/app
-WORKDIR /usr/src/app
+# Locales
+RUN locale-gen en_US.UTF-8
+ENV LANG "en_US.UTF-8"
+ENV LANGUAGE "en_US.UTF-8"
+ENV LC_ALL "en_US.UTF-8"
 
-# Get the node_modules setup before anything else.
-COPY package.json .
-RUN npm install
+# Install the Android SDK
+ENV ANDROID_SDK_VERSION r24.4.1
+RUN cd /opt && curl -s https://dl.google.com/android/android-sdk_${ANDROID_SDK_VERSION}-linux.tgz | tar -xz
+ENV ANDROID_HOME /opt/android-sdk-linux
+ENV PATH ${PATH}:${ANDROID_HOME}/tools:${ANDROID_HOME}/platform-tools
+RUN echo y | android update sdk --no-ui --all --filter tools > /dev/null && \
+    echo y | android update sdk --no-ui --all --filter platform-tools | grep 'package installed' && \
+    echo y | android update sdk --no-ui --all --filter build-tools-23.0.1 | grep 'package installed' && \
+    echo y | android update sdk --no-ui --all --filter extra-android-m2repository | grep 'package installed' && \
+    echo y | android update sdk --no-ui --all --filter android-23 | grep 'package installed'
 
-# Make sure core is downloaded.
-COPY scripts/download-core.sh scripts/
-RUN scripts/download-core.sh node
+# Install the Android NDK
+ENV ANDROID_NDK_VERSION r10e
+RUN cd /opt && \
+    curl -sO http://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux-x86_64.zip && \
+    unzip -q android-ndk-${ANDROID_NDK_VERSION}-linux-x86_64.zip && \
+    rm android-ndk-${ANDROID_NDK_VERSION}-linux-x86_64.zip
+ENV ANDROID_NDK /opt/android-ndk-${ANDROID_NDK_VERSION}
 
-# Copy only what we need to build.
-COPY src/ src/
+RUN cd /opt && \
+    git clone https://github.com/facebook/watchman.git && \
+    cd watchman && \
+    git checkout v4.7.0 && \
+    ./autogen.sh && ./configure && \
+    make && make install
 
-# Build the Debug version of the module.
-RUN src/node/build-node.sh Debug
-
-# Copy everything else needed to run tests.
-COPY lib/ lib/
-COPY scripts/ scripts/
-COPY tests/ tests/
-
-# Switch to the non-root user.
-RUN chown -R user .
-USER user
-
-# Default to running the Node tests
-CMD ["node", "tests"]
+RUN npm install -g react-native-cli

@@ -57,6 +57,12 @@ class Realm {
     get schemaVersion() {}
 
     /**
+     * Gets the sync session if this is a synced Realm
+     * @type {Session}
+     */
+    get syncSession() {}
+
+    /**
      * Create a new `Realm` instance using the provided `config`. If a Realm does not yet exist
      * at `config.path` (or {@link Realm.defaultPath} if not provided), then this constructor
      * will create it with the provided `config.schema` (which is _required_ in this case).
@@ -68,6 +74,23 @@ class Realm {
      * @throws {Error} If anything in the provided `config` is invalid.
      */
     constructor(config) {}
+
+    /**
+     * Open a realm asynchronously with a promise. If the realm is synced, it will be fully 
+     * synchronized before it is available.
+     * @param {Realm~Configuration} config 
+     * @returns {Promise} - a promise that will be resolved with the realm instance when it's available.
+     */
+    static open(config) {}
+
+    /**
+     * Open a realm asynchronously with a callback. If the realm is synced, it will be fully 
+     * synchronized before it is available.
+     * @param {Realm~Configuration} config 
+     * @param  {callback(error, realm)} - will be called when the realm is ready.
+     * @throws {Error} If anything in the provided `config` is invalid.
+     */
+    static openAsync(config, callback) {}
 
     /**
      * Closes this Realm so it may be re-opened with a newer schema version.
@@ -121,7 +144,7 @@ class Realm {
      * Add a listener `callback` for the specified event `name`.
      * @param {string} name - The name of event that should cause the callback to be called.
      *   _Currently, only the "change" event supported_.
-     * @param {function(Realm, string)} callback - Function to be called when the event occurs.
+     * @param {callback(Realm, string)} callback - Function to be called when the event occurs.
      *   Each callback will only be called once per event, regardless of the number of times
      *   it was added.
      * @throws {Error} If an invalid event `name` is supplied, or if `callback` is not a function.
@@ -132,7 +155,7 @@ class Realm {
     * Remove the listener `callback` for the specfied event `name`.
     * @param {string} name - The event name.
     *   _Currently, only the "change" event supported_.
-    * @param {function(Realm, string)} callback - Function that was previously added as a
+    * @param {callback(Realm, string)} callback - Function that was previously added as a
     *   listener for this event through the {@link Realm#addListener addListener} method.
     * @throws {Error} If an invalid event `name` is supplied, or if `callback` is not a function.
     */
@@ -176,7 +199,7 @@ Realm.defaultPath;
  * @type {Object}
  * @property {ArrayBuffer|ArrayBufferView} [encryptionKey] - The 512-bit (64-byte) encryption
  *   key used to encrypt and decrypt all data in the Realm.
- * @property {function(Realm, Realm)} [migration] - The function to run if a migration is needed.
+ * @property {callback(Realm, Realm)} [migration] - The function to run if a migration is needed.
  *   This function should provide all the logic for converting data models from previous schemas
  *   to the new schema.
  *   This function takes two arguments:
@@ -189,6 +212,10 @@ Realm.defaultPath;
  *   object types in this Realm. **Required** when first creating a Realm at this `path`.
  * @property {number} [schemaVersion] - **Required** (and must be incremented) after
  *   changing the `schema`.
+ * @property {Object} [sync] - Sync configuration parameters with the following 
+ *   child properties:
+ *   - `user` - A `User` object obtained by calling `Realm.Sync.User.login`
+ *   - `url` - A `string` which contains a valid Realm Sync url   
  */
 
 /**

@@ -18,15 +18,19 @@
 
 #pragma once
 
+#include "object_accessor.hpp"
+#include "object_store.hpp"
+#include "util/format.hpp"
+
 #include "js_class.hpp"
 #include "js_types.hpp"
 #include "js_util.hpp"
-
-#include "object_accessor.hpp"
-#include "object_store.hpp"
+#include "js_schema.hpp"
 
 namespace realm {
 namespace js {
+
+template<typename> class NativeAccessor;
 
 template<typename T>
 struct RealmObjectClass : ClassDefinition<T, realm::Object> {
@@ -46,7 +50,8 @@ struct RealmObjectClass : ClassDefinition<T, realm::Object> {
     static bool set_property(ContextType, ObjectType, const String &, ValueType);
     static std::vector<String> get_property_names(ContextType, ObjectType);
     
-    static void is_valid(ContextType, ObjectType, size_t, const ValueType [], ReturnValue &);
+    static void is_valid(ContextType, FunctionType, ObjectType, size_t, const ValueType [], ReturnValue &);
+    static void get_object_schema(ContextType, FunctionType, ObjectType, size_t, const ValueType [], ReturnValue &);
 
     const std::string name = "RealmObject";
 
@@ -58,12 +63,19 @@ struct RealmObjectClass : ClassDefinition<T, realm::Object> {
 
     MethodMap<T> const methods = {
         {"isValid", wrap<is_valid>},
+        {"objectSchema", wrap<get_object_schema>},
     };
 };
 
 template<typename T>
-void RealmObjectClass<T>::is_valid(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void RealmObjectClass<T>::is_valid(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     return_value.set(get_internal<T, RealmObjectClass<T>>(this_object)->is_valid());
+}
+    
+template<typename T>
+void RealmObjectClass<T>::get_object_schema(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    auto object = get_internal<T, RealmObjectClass<T>>(this_object);
+    return_value.set(Schema<T>::object_for_object_schema(ctx, object->get_object_schema()));
 }
     
 template<typename T>
@@ -94,7 +106,9 @@ template<typename T>
 void RealmObjectClass<T>::get_property(ContextType ctx, ObjectType object, const String &property, ReturnValue &return_value) {
     try {
         auto realm_object = get_internal<T, RealmObjectClass<T>>(object);
-        auto result = realm_object->template get_property_value<ValueType>(ctx, property);
+        NativeAccessor<T> accessor(ctx, realm_object->realm(), realm_object->get_object_schema());
+        std::string name = property;
+        auto result = realm_object->template get_property_value<ValueType>(accessor, name);
         return_value.set(result);
     } catch (InvalidPropertyException &ex) {
         // getters for nonexistent properties in JS should always return undefined
@@ -104,12 +118,20 @@ void RealmObjectClass<T>::get_property(ContextType ctx, ObjectType object, const
 template<typename T>
 bool RealmObjectClass<T>::set_property(ContextType ctx, ObjectType object, const String &property, ValueType value) {
     auto realm_object = get_internal<T, RealmObjectClass<T>>(object);
-    try {
-        realm_object->set_property_value(ctx, property, value, true);
-    }
-    catch (InvalidPropertyException &ex) {
+
+    std::string property_name = property;
+    const Property* prop = realm_object->get_object_schema().property_for_name(property_name);
+    if (!prop) {
         return false;
     }
+
+    if (!Value::is_valid_for_property(ctx, value, *prop)) {
+        throw TypeErrorException(util::format("%1.%2", realm_object->get_object_schema().name, property_name),
+                                 js_type_name_for_property_type(prop->type));
+    }
+
+    NativeAccessor<T> accessor(ctx, realm_object->realm(), realm_object->get_object_schema());
+    realm_object->set_property_value(accessor, property_name, value, true);
     return true;
 }
 

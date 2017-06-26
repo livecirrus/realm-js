@@ -19,6 +19,7 @@
 #pragma once
 
 #include "js_collection.hpp"
+#include "js_object_accessor.hpp"
 #include "js_realm_object.hpp"
 #include "js_results.hpp"
 #include "js_types.hpp"
@@ -32,11 +33,24 @@
 namespace realm {
 namespace js {
 
+template<typename JSEngine>
+class NativeAccessor;
+
 template<typename T>
-struct ListClass : ClassDefinition<T, realm::List, CollectionClass<T>> {
+class List : public realm::List {
+  public:
+    List(std::shared_ptr<realm::Realm> r, const ObjectSchema& s, LinkViewRef l) noexcept : realm::List(r, l) {}
+    List(const realm::List &l) : realm::List(l) {}
+
+    std::vector<std::pair<Protected<typename T::Function>, NotificationToken>> m_notification_tokens;
+};
+
+template<typename T>
+struct ListClass : ClassDefinition<T, realm::js::List<T>, CollectionClass<T>> {
     using ContextType = typename T::Context;
     using ObjectType = typename T::Object;
     using ValueType = typename T::Value;
+    using FunctionType = typename T::Function;
     using Object = js::Object<T>;
     using Value = js::Value<T>;
     using ReturnValue = js::ReturnValue<T>;
@@ -49,16 +63,21 @@ struct ListClass : ClassDefinition<T, realm::List, CollectionClass<T>> {
     static bool set_index(ContextType, ObjectType, uint32_t, ValueType);
 
     // methods
-    static void push(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void pop(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void unshift(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void shift(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void splice(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void snapshot(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void filtered(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void sorted(ContextType, ObjectType, size_t, const ValueType[], ReturnValue &);
-    static void is_valid(ContextType, ObjectType, size_t, const ValueType [], ReturnValue &);
-
+    static void push(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void pop(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void unshift(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void shift(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void splice(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void snapshot(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void filtered(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void sorted(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void is_valid(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    
+    // observable
+    static void add_listener(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void remove_listener(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    static void remove_all_listeners(ContextType, FunctionType, ObjectType, size_t, const ValueType[], ReturnValue &);
+    
     std::string const name = "List";
 
     MethodMap<T> const methods = {
@@ -71,6 +90,9 @@ struct ListClass : ClassDefinition<T, realm::List, CollectionClass<T>> {
         {"filtered", wrap<filtered>},
         {"sorted", wrap<sorted>},
         {"isValid", wrap<is_valid>},
+        {"addListener", wrap<add_listener>},
+        {"removeListener", wrap<remove_listener>},
+        {"removeAllListeners", wrap<remove_all_listeners>},
     };
 
     PropertyMap<T> const properties = {
@@ -82,11 +104,11 @@ struct ListClass : ClassDefinition<T, realm::List, CollectionClass<T>> {
 
 template<typename T>
 typename T::Object ListClass<T>::create_instance(ContextType ctx, realm::List list) {
-    return create_object<T, ListClass<T>>(ctx, new realm::List(std::move(list)));
+    return create_object<T, ListClass<T>>(ctx, new realm::js::List<T>(std::move(list)));
 }
 
 template<typename T>
-void ListClass<T>::get_length(ContextType ctx, ObjectType object, ReturnValue &return_value) {
+void ListClass<T>::get_length(ContextType, ObjectType object, ReturnValue &return_value) {
     auto list = get_internal<T, ListClass<T>>(object);
     return_value.set((uint32_t)list->size());
 }
@@ -102,24 +124,26 @@ void ListClass<T>::get_index(ContextType ctx, ObjectType object, uint32_t index,
 template<typename T>
 bool ListClass<T>::set_index(ContextType ctx, ObjectType object, uint32_t index, ValueType value) {
     auto list = get_internal<T, ListClass<T>>(object);
-    list->set(ctx, value, index);
+    NativeAccessor<T> accessor(ctx, list->get_realm(), list->get_object_schema());
+    list->set(accessor, index, value);
     return true;
 }
 
 template<typename T>
-void ListClass<T>::push(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::push(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count_at_least(argc, 1);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
+    NativeAccessor<T> accessor(ctx, list->get_realm(), list->get_object_schema());
     for (size_t i = 0; i < argc; i++) {
-        list->add(ctx, arguments[i]);
+        list->add(accessor, arguments[i]);
     }
 
     return_value.set((uint32_t)list->size());
 }
 
 template<typename T>
-void ListClass<T>::pop(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::pop(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count(argc, 0);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
@@ -138,19 +162,20 @@ void ListClass<T>::pop(ContextType ctx, ObjectType this_object, size_t argc, con
 }
 
 template<typename T>
-void ListClass<T>::unshift(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::unshift(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count_at_least(argc, 1);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
+    NativeAccessor<T> accessor(ctx, list->get_realm(), list->get_object_schema());
     for (size_t i = 0; i < argc; i++) {
-        list->insert(ctx, arguments[i], i);
+        list->insert(accessor, i, arguments[i]);
     }
 
     return_value.set((uint32_t)list->size());
 }
 
 template<typename T>
-void ListClass<T>::shift(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::shift(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count(argc, 0);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
@@ -167,7 +192,7 @@ void ListClass<T>::shift(ContextType ctx, ObjectType this_object, size_t argc, c
 }
 
 template<typename T>
-void ListClass<T>::splice(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::splice(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count_at_least(argc, 1);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
@@ -189,6 +214,7 @@ void ListClass<T>::splice(ContextType ctx, ObjectType this_object, size_t argc, 
     std::vector<ValueType> removed_objects;
     removed_objects.reserve(remove);
 
+    NativeAccessor<T> accessor(ctx, list->get_realm(), list->get_object_schema());
     for (size_t i = 0; i < remove; i++) {
         auto realm_object = realm::Object(list->get_realm(), list->get_object_schema(), list->get(index));
 
@@ -196,22 +222,22 @@ void ListClass<T>::splice(ContextType ctx, ObjectType this_object, size_t argc, 
         list->remove(index);
     }
     for (size_t i = 2; i < argc; i++) {
-        list->insert(ctx, arguments[i], index + i - 2);
+        list->insert(accessor, index + i - 2, arguments[i]);
     }
 
     return_value.set(Object::create_array(ctx, removed_objects));
 }
 
 template<typename T>
-void ListClass<T>::snapshot(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::snapshot(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count(argc, 0);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
-    return_value.set(ResultsClass<T>::create_instance(ctx, *list, false));
+    return_value.set(ResultsClass<T>::create_instance(ctx, list->snapshot()));
 }
 
 template<typename T>
-void ListClass<T>::filtered(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::filtered(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count_at_least(argc, 1);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
@@ -219,7 +245,7 @@ void ListClass<T>::filtered(ContextType ctx, ObjectType this_object, size_t argc
 }
 
 template<typename T>
-void ListClass<T>::sorted(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::sorted(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     validate_argument_count(argc, 1, 2);
 
     auto list = get_internal<T, ListClass<T>>(this_object);
@@ -227,8 +253,57 @@ void ListClass<T>::sorted(ContextType ctx, ObjectType this_object, size_t argc, 
 }
     
 template<typename T>
-void ListClass<T>::is_valid(ContextType ctx, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+void ListClass<T>::is_valid(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
     return_value.set(get_internal<T, ListClass<T>>(this_object)->is_valid());
+}
+    
+template<typename T>
+void ListClass<T>::add_listener(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    validate_argument_count(argc, 1);
+    
+    auto list = get_internal<T, ListClass<T>>(this_object);
+    auto callback = Value::validated_to_function(ctx, arguments[0]);
+    Protected<FunctionType> protected_callback(ctx, callback);
+    Protected<ObjectType> protected_this(ctx, this_object);
+    Protected<typename T::GlobalContext> protected_ctx(Context<T>::get_global_context(ctx));
+
+    auto token = list->add_notification_callback([=](CollectionChangeSet change_set, std::exception_ptr exception) {
+        HANDLESCOPE
+
+        ValueType arguments[2];
+        arguments[0] = static_cast<ObjectType>(protected_this);
+        arguments[1] = CollectionClass<T>::create_collection_change_set(protected_ctx, change_set);
+        Function<T>::callback(protected_ctx, protected_callback, protected_this, 2, arguments);
+    });
+    list->m_notification_tokens.emplace_back(protected_callback, std::move(token));
+}
+    
+template<typename T>
+void ListClass<T>::remove_listener(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    validate_argument_count(argc, 1);
+    
+    auto list = get_internal<T, ListClass<T>>(this_object);
+    auto callback = Value::validated_to_function(ctx, arguments[0]);
+    auto protected_function = Protected<FunctionType>(ctx, callback);
+
+    auto iter = list->m_notification_tokens.begin();
+    typename Protected<FunctionType>::Comparator compare;
+    while (iter != list->m_notification_tokens.end()) {
+        if(compare(iter->first, protected_function)) {
+            iter = list->m_notification_tokens.erase(iter);
+        }
+        else {
+            iter++;
+        }
+    }
+}
+    
+template<typename T>
+void ListClass<T>::remove_all_listeners(ContextType ctx, FunctionType, ObjectType this_object, size_t argc, const ValueType arguments[], ReturnValue &return_value) {
+    validate_argument_count(argc, 0);
+
+    auto list = get_internal<T, ListClass<T>>(this_object);
+    list->m_notification_tokens.clear();
 }
 
 } // js

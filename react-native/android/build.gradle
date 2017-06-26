@@ -32,13 +32,19 @@ import org.apache.tools.ant.filters.ReplaceTokens
 // We then copy both the downloaded code and our custom makefiles and headers into third-party-ndk.
 // After that we build native code from src/main/jni with module path pointing at third-party-ndk.
 
-ext.coreVersion = "npm --silent run get-core-version".execute().text.trim()
-def currentVersion = "npm --silent run get-version".execute().text.trim()
+
+ext.coreVersion = getDependenciesVersion("REALM_CORE_VERSION").trim()
+ext.syncVersion = getDependenciesVersion("REALM_SYNC_VERSION").trim()
+def currentVersion = getDependenciesVersion("VERSION").trim()
+println "Realm Core Version: $ext.coreVersion"
+println "Realm Sync Version: $ext.syncVersion"
+
 def downloadsDir = new File("$projectDir/downloads")
 def jscDownloadDir = new File("$projectDir/src/main/jni/jsc")
 def coreDownloadDir = new File("$projectDir/src/main/jni")
 def publishDir = new File("$projectDir/../../android/")
-
+// to build with sync run: ./gradlew assembleDebug -PbuildWithSync=true
+ext.buildSync = project.hasProperty('buildWithSync') ? project.getProperty('buildWithSync').toBoolean() : true
 
 task generateVersionClass(type: Copy) {
     from 'src/main/templates/Version.java'
@@ -64,25 +70,40 @@ task downloadJSCHeaders(type: Download) {
  }
 
 task downloadRealmCore(type: Download) {
-    src "https://static.realm.io/downloads/core/realm-core-android-${project.coreVersion}.tar.gz"
+    if (project.buildSync) {
+        src "https://static.realm.io/downloads/sync/realm-sync-android-${project.syncVersion}.tar.gz"
+    } else {
+        src "https://static.realm.io/downloads/core/realm-core-android-${project.coreVersion}.tar.gz"
+    }
     onlyIfNewer true
-    overwrite false
-    dest new File(downloadsDir, "realm-core-android-${project.coreVersion}.tar.gz")
+    overwrite true
+    if (project.buildSync) {
+        dest new File(downloadsDir, "realm-core-android-${project.syncVersion}.tar.gz")
+    } else {
+        dest new File(downloadsDir, "realm-core-android-${project.coreVersion}.tar.gz")
+    }
 }
 
 task prepareRealmCore(dependsOn: downloadRealmCore, type:Copy) {
     from tarTree(downloadRealmCore.dest)
     into "$coreDownloadDir/core"
-    //Fixing Core file naming 'arm-*' to 'armeabi-*'
-    doLast {
-      exec {
-        workingDir = "$coreDownloadDir/core"
-            commandLine = [
-                    "bash",
-                    "-c",
-                    "find . -name \"*-arm-*\" -exec sh -c \"echo {} | sed -e s/arm/armeabi/g | xargs mv {} \" \\;"
-            ]
-      }
+    rename { String fileName ->
+        fileName.replace("-arm-", "-armeabi-")
+    }
+}
+
+def getDependenciesVersion(keyName) {
+    def inputFile = new File(buildscript.sourceFile.getParent() + "/../../dependencies.list")
+    def line
+    inputFile.withReader { reader ->
+        while ((line = reader.readLine())!=null) {
+            def (key, value) = line.tokenize('=')
+            if (keyName == key) {
+                return value
+            }
+        }
+
+        throw new GradleException("${keyName} not found in dependencies.list.")
     }
 }
 
@@ -139,6 +160,8 @@ task buildReactNdkLib(dependsOn: [downloadJSCHeaders,prepareRealmCore], type: Ex
     inputs.file('src/main/jni')
     outputs.dir("$buildDir/realm-react-ndk/all")
     commandLine getNdkBuildFullPath(),
+            '-e',
+            project.buildSync ? 'BUILD_TYPE_SYNC=1' : 'BUILD_TYPE_SYNC=0',
             'NDK_PROJECT_PATH=null',
             "NDK_APPLICATION_MK=$projectDir/src/main/jni/Application.mk",
             'NDK_OUT=' + temporaryDir,
@@ -166,7 +189,7 @@ task packageReactNdkLibs(dependsOn: buildReactNdkLib, type: Copy) {
 
 android {
     compileSdkVersion 23
-    buildToolsVersion "23.0.1"
+    buildToolsVersion "25.0.2"
 
     defaultConfig {
         minSdkVersion 16

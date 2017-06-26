@@ -32,7 +32,7 @@
 using namespace realm;
 using namespace realm::rpc;
 
-using Accessor = NativeAccessor<JSValueRef, JSContextRef>;
+using Accessor = realm::js::NativeAccessor<jsc::Types>;
 
 static const char * const RealmObjectTypesData = "data";
 static const char * const RealmObjectTypesDate = "date";
@@ -42,6 +42,8 @@ static const char * const RealmObjectTypesList = "list";
 static const char * const RealmObjectTypesObject = "object";
 static const char * const RealmObjectTypesResults = "results";
 static const char * const RealmObjectTypesRealm = "realm";
+static const char * const RealmObjectTypesUser = "user";
+static const char * const RealmObjectTypesSession = "session";
 static const char * const RealmObjectTypesUndefined = "undefined";
 
 static RPCServer*& get_rpc_server(JSGlobalContextRef ctx) {
@@ -111,6 +113,11 @@ RPCServer::RPCServer() {
 
         jsc::String realm_string = "Realm";
         JSObjectRef realm_constructor = jsc::Object::validated_get_constructor(m_context, JSContextGetGlobalObject(m_context), realm_string);
+        JSValueRef refreshAccessTokenCallback = deserialize_json_value(dict["refreshAccessToken"]);
+
+        JSObjectRef sync_constructor = (JSObjectRef)jsc::Object::get_property(m_context, realm_constructor, "Sync");
+        JSObjectRef user_constructor = (JSObjectRef)jsc::Object::get_property(m_context, sync_constructor, "User");
+        jsc::Object::set_property(m_context, user_constructor, "_refreshAccessToken", refreshAccessTokenCallback);
 
         m_session_id = store_object(realm_constructor);
         return (json){{"result", m_session_id}};
@@ -132,6 +139,27 @@ RPCServer::RPCServer() {
         JSObjectRef realm_object = jsc::Function::construct(m_context, realm_constructor, arg_count, arg_values);
         RPCObjectID realm_id = store_object(realm_object);
         return (json){{"result", realm_id}};
+    };
+    m_requests["/create_user"] = [this](const json dict) {
+        JSObjectRef realm_constructor = m_session_id ? JSObjectRef(m_objects[m_session_id]) : NULL;
+        if (!realm_constructor) {
+            throw std::runtime_error("Realm constructor not found!");
+        }
+        
+        JSObjectRef sync_constructor = (JSObjectRef)jsc::Object::get_property(m_context, realm_constructor, "Sync");
+        JSObjectRef user_constructor = (JSObjectRef)jsc::Object::get_property(m_context, sync_constructor, "User");
+        JSObjectRef create_user_method = (JSObjectRef)jsc::Object::get_property(m_context, user_constructor, "createUser");
+        
+        json::array_t args = dict["arguments"];
+        size_t arg_count = args.size();
+        JSValueRef arg_values[arg_count];
+        
+        for (size_t i = 0; i < arg_count; i++) {
+            arg_values[i] = deserialize_json_value(args[i]);
+        }
+
+        JSObjectRef user_object = (JSObjectRef)jsc::Function::call(m_context, create_user_method, arg_count, arg_values);
+        return (json){{"result", serialize_json_value(user_object)}};
     };
     m_requests["/call_method"] = [this](const json dict) {
         JSObjectRef object = m_objects[dict["id"].get<RPCObjectID>()];
@@ -181,6 +209,18 @@ RPCServer::RPCServer() {
         m_objects.erase(oid);
         return json::object();
     };
+    m_requests["/get_all_users"] = [this](const json dict) {
+        JSObjectRef realm_constructor = m_session_id ? JSObjectRef(m_objects[m_session_id]) : NULL;
+        if (!realm_constructor) {
+            throw std::runtime_error("Realm constructor not found!");
+        }
+        
+        JSObjectRef sync_constructor = (JSObjectRef)jsc::Object::get_property(m_context, realm_constructor, "Sync");
+        JSObjectRef user_constructor = (JSObjectRef)jsc::Object::get_property(m_context, sync_constructor, "User");
+        JSValueRef value = jsc::Object::get_property(m_context, user_constructor, "all");
+        
+        return (json){{"result", serialize_json_value(value)}};
+    };
     m_requests["/clear_test_state"] = [this](const json dict) {
         // The session ID points to the Realm constructor object, which should remain.
         auto realm_constructor = m_objects[m_session_id];
@@ -191,8 +231,9 @@ RPCServer::RPCServer() {
         }
 
         m_callbacks.clear();
+        m_callback_ids.clear();
         JSGarbageCollect(m_context);
-        js::delete_all_realms();
+        js::clear_test_state();
 
         return json::object();
     };
@@ -209,22 +250,24 @@ RPCServer::~RPCServer() {
     JSGlobalContextRelease(m_context);
 }
 
-void RPCServer::run_callback(JSContextRef ctx, JSObjectRef this_object, size_t argc, const JSValueRef arguments[], jsc::ReturnValue &return_value) {
+void RPCServer::run_callback(JSContextRef ctx, JSObjectRef function, JSObjectRef this_object, size_t argc, const JSValueRef arguments[], jsc::ReturnValue &return_value) {
     RPCServer* server = get_rpc_server(JSContextGetGlobalContext(ctx));
     if (!server) {
         return;
     }
 
     // The first argument was curried to be the callback id.
-    RPCObjectID callback_id = jsc::Value::to_number(ctx, arguments[0]);
-    JSObjectRef arguments_array = jsc::Object::create_array(ctx, uint32_t(argc - 1), argc == 1 ? nullptr : arguments + 1);
+    RPCObjectID callback_id = server->m_callback_ids[function];
+    JSObjectRef arguments_array = jsc::Object::create_array(ctx, uint32_t(argc), arguments);
     json arguments_json = server->serialize_json_value(arguments_array);
+    json this_json = server->serialize_json_value(this_object);
 
     // The next task on the stack will instruct the JS to run this callback.
     // This captures references since it will be executed before exiting this function.
     server->m_worker.add_task([&]() -> json {
         return {
             {"callback", callback_id},
+            {"this", this_json},
             {"arguments", arguments_json},
         };
     });
@@ -336,6 +379,31 @@ json RPCServer::serialize_json_value(JSValueRef js_value) {
             {"id", store_object(js_object)},
         };
     }
+    else if (jsc::Object::is_instance<js::UserClass<jsc::Types>>(m_context, js_object)) {
+        auto user = *jsc::Object::get_internal<js::UserClass<jsc::Types>>(js_object);
+        json user_dict {
+            {"identity", user->identity()},
+            {"token", user->refresh_token()},
+            {"server", user->server_url()},
+            {"isAdmin", user->is_admin()}
+        };
+        return {
+            {"type", RealmObjectTypesUser},
+            {"id", store_object(js_object)},
+            {"data", user_dict}
+        };
+    }
+    else if (jsc::Object::is_instance<js::SessionClass<jsc::Types>>(m_context, js_object)) {
+        json session_dict {
+            {"user", serialize_json_value(jsc::Object::get_property(m_context, js_object, "user"))},
+            {"config", serialize_json_value(jsc::Object::get_property(m_context, js_object, "config"))}
+        };
+        return {
+            {"type", RealmObjectTypesSession},
+            {"id", store_object(js_object)},
+            {"data", session_dict}
+        };
+    }
     else if (jsc::Value::is_array(m_context, js_object)) {
         uint32_t length = jsc::Object::validated_get_length(m_context, js_object);
         std::vector<json> array;
@@ -344,8 +412,8 @@ json RPCServer::serialize_json_value(JSValueRef js_value) {
         }
         return {{"value", array}};
     }
-    else if (jsc::Value::is_array_buffer(m_context, js_object)) {
-        std::string data = Accessor::to_binary(m_context, js_value);
+    else if (jsc::Value::is_binary(m_context, js_object)) {
+        auto data = jsc::Value::to_binary(m_context, js_object);
         return {
             {"type", RealmObjectTypesData},
             {"value", base64_encode((unsigned char *)data.data(), data.size())},
@@ -356,6 +424,15 @@ json RPCServer::serialize_json_value(JSValueRef js_value) {
             {"type", RealmObjectTypesDate},
             {"value", jsc::Value::to_number(m_context, js_object)},
         };
+    }
+    else if (jsc::Value::is_function(m_context, js_object)) {
+        auto it = m_callback_ids.find(js_object);
+        if (it != m_callback_ids.end()) {
+            return {
+                {"type", RealmObjectTypesFunction},
+                {"value", it->second}
+            };
+        }
     }
     else {
         // Serialize this JS object as a plain object since it doesn't match any known types above.
@@ -409,13 +486,8 @@ JSValueRef RPCServer::deserialize_json_value(const json dict) {
 
             if (!m_callbacks.count(callback_id)) {
                 JSObjectRef callback = JSObjectMakeFunctionWithCallback(m_context, nullptr, js::wrap<run_callback>);
-
-                // Curry the first argument to be the callback id.
-                JSValueRef bind_args[2] = {jsc::Value::from_null(m_context), jsc::Value::from_number(m_context, callback_id)};
-                JSValueRef bound_callback = jsc::Object::call_method(m_context, callback, "bind", 2, bind_args);
-
-                callback = jsc::Value::to_function(m_context, bound_callback);
                 m_callbacks.emplace(callback_id, js::Protected<JSObjectRef>(m_context, callback));
+                m_callback_ids.emplace(callback, callback_id);
             }
 
             return m_callbacks.at(callback_id);
@@ -439,7 +511,7 @@ JSValueRef RPCServer::deserialize_json_value(const json dict) {
             if (!base64_decode(value.get<std::string>(), &bytes)) {
                 throw std::runtime_error("Failed to decode base64 encoded data");
             }
-            return Accessor::from_binary(m_context, realm::BinaryData(bytes));
+            return jsc::Value::from_binary(m_context, realm::BinaryData(bytes.data(), bytes.size()));
         }
         else if (type_string == RealmObjectTypesDate) {
             return jsc::Object::create_date(m_context, value.get<double>());

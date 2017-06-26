@@ -5,3 +5,6 @@
 build/
 node_modules/
 vendor/
+
+/tests/test-runners/
+/object-server-for-testing/
